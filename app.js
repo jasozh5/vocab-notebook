@@ -248,6 +248,7 @@ function closeConj() { const dlg = document.getElementById('conjdlg'); if (dlg.c
 const QUIZ_MODES = {
   k2e: { label: 'Korean → English', hint: 'See the Korean word, pick the meaning' },
   e2k: { label: 'English → Korean', hint: 'See the meaning, pick the Korean word' },
+  e2kt: { label: 'English → Korean (typed)', hint: 'See the meaning, type the Korean word' },
   conj: { label: 'Conjugation', hint: 'Type the right form of a verb or adjective' },
 };
 const FORM_SETS = {
@@ -306,6 +307,7 @@ function buildQuiz(s) {
     const left = pool.slice();
     while (qs.length < s.count && left.length) {
       const w = pickWeighted(left); left.splice(left.indexOf(w), 1);
+      if (s.mode === 'e2kt') { qs.push({ wid: w.id, kind: 'e2kt', answer: w.k }); continue; }
       const field = s.mode === 'k2e' ? 'en' : 'k';
       qs.push({ wid: w.id, kind: s.mode, answer: w[field], options: shuffle([w[field], ...distractors(w, field, 3)]) });
     }
@@ -313,12 +315,13 @@ function buildQuiz(s) {
   return qs;
 }
 const norm = s => String(s || '').replace(/[\s?.!~,。]/g, '').normalize('NFC');
+const isTyped = q => q.kind === 'conj' || q.kind === 'e2kt';
 function startQuiz(qs) { ui.quiz = { qs, i: 0, score: 0, answered: null, results: [] }; render(); }
 function record(w, right) { w.stats = w.stats || { r: 0, m: 0 }; if (right) w.stats.r++; else w.stats.m++; persist(); }
 function answer(given) {
   const z = ui.quiz, q = z.qs[z.i], w = byId(q.wid);
   if (!w || z.answered) return;
-  const right = q.kind === 'conj' ? norm(given) === norm(q.answer) : given === q.answer;
+  const right = isTyped(q) ? norm(given) === norm(q.answer) : given === q.answer;
   z.answered = { given, right };
   if (right) z.score++;
   z.results.push({ q, given, right });
@@ -367,14 +370,21 @@ function quizQuestionView() {
   const head = `<div class="qhead"><span>Question ${z.i + 1} of ${z.qs.length}</span><span>Score ${z.score}</span><button class="btn small" type="button" id="quitquiz">End quiz</button></div>
     <div class="progress"><span style="width:${(z.i / z.qs.length) * 100}%"></span></div>`;
   let body;
-  if (q.kind === 'conj') {
-    body = `<div class="prompt"><div class="pword" lang="ko">${esc(w.k)}</div><div class="en">${esc(w.en)}</div>
-      <div class="ask"><span class="tag topic">${esc(q.sec)}</span> <b>${esc(q.label)}</b> <span class="muted" lang="ko">${esc(q.pattern)}</span></div></div>
-      <form id="typedform" class="typed" autocomplete="off">
+  const typedForm = `<form id="typedform" class="typed" autocomplete="off">
         <input id="typed" lang="ko" placeholder="Type in Korean" ${done ? 'disabled' : ''} value="${done ? esc(z.answered.given) : ''}" aria-label="Your answer">
         ${done ? '' : '<button class="btn primary" type="submit">Check</button><button class="btn" type="button" id="giveup">Show answer</button>'}
       </form>`;
+  if (q.kind === 'conj') {
+    body = `<div class="prompt"><div class="pword" lang="ko">${esc(w.k)}</div><div class="en">${esc(w.en)}</div>
+      <div class="ask"><span class="tag topic">${esc(q.sec)}</span> <b>${esc(q.label)}</b> <span class="muted" lang="ko">${esc(q.pattern)}</span></div></div>
+      ${typedForm}`;
     if (done) body += feedback(z.answered.right, `<span lang="ko">${esc(q.answer)}</span>`, q.note, w);
+  } else if (q.kind === 'e2kt') {
+    const ty = TYPES[w.t] || TYPES.other;
+    body = `<div class="prompt"><div class="pword en-prompt">${esc(w.en)}</div>
+      <div class="ask"><span class="tag t-${esc(w.t)}">${ty.ko} · ${ty.en}</span> <span class="tag topic">${esc(w.topic)}</span></div></div>
+      ${typedForm}`;
+    if (done) body += feedback(z.answered.right, `<span lang="ko">${esc(q.answer)}</span>`, null, w);
   } else {
     const prompt = q.kind === 'k2e' ? `<div class="pword" lang="ko">${esc(w.k)}</div><div class="muted">What does this mean?</div>` : `<div class="pword en-prompt">${esc(w.en)}</div><div class="muted">Which Korean word is this?</div>`;
     body = `<div class="prompt">${prompt}</div><div class="opts">
@@ -392,12 +402,12 @@ function feedback(right, answerHTML, note, w) {
   const z = ui.quiz, q = z.qs[z.i];
   return `<div class="fb ${right ? 'ok' : 'bad'}" role="status">
     <b>${right ? '맞아요! Correct.' : (z.answered.given ? 'Not quite.' : 'Here’s the answer.')}</b>
-    ${right && q.kind !== 'conj' ? '' : `<div>Answer: <span class="ans">${answerHTML}</span></div>`}
+    ${right && !isTyped(q) ? '' : `<div>Answer: <span class="ans">${answerHTML}</span></div>`}
     ${note ? `<div class="muted small">${esc(note)}</div>` : ''}
     ${w.ex ? `<div class="ex"><b lang="ko">${esc(w.ex)}</b>${w.exEn ? esc(w.exEn) : ''}</div>` : ''}
     <div class="row">
       <button class="btn primary" type="button" id="nextq">${z.i + 1 < z.qs.length ? 'Next' : 'See results'}</button>
-      ${!right && q.kind === 'conj' && z.answered.given ? '<button class="btn" type="button" id="overridebtn">I was right, count it</button>' : ''}
+      ${!right && isTyped(q) && z.answered.given ? '<button class="btn" type="button" id="overridebtn">I was right, count it</button>' : ''}
     </div>
   </div>`;
 }
