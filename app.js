@@ -269,13 +269,17 @@ function quizPool(s) {
     return true;
   });
 }
-// Words missed more often (and practiced less) come up more.
-const weight = w => { const st = w.stats || {}; return (1 + 2 * (st.m || 0)) / (1 + 0.5 * (st.r || 0)); };
-function pickWeighted(list) {
-  const total = list.reduce((s, w) => s + weight(w), 0);
-  let x = Math.random() * total;
-  for (const w of list) { x -= weight(w); if (x <= 0) return w; }
-  return list[list.length - 1];
+// Pick words least-recently-asked first, so the whole pool gets covered before anything repeats.
+// Up to 20% of each quiz reviews words that were wrong the last time they were asked.
+const REVIEW_SHARE = 0.2;
+const lastAsked = w => (w.stats && w.stats.last) || 0;
+const needsReview = w => { const st = w.stats; return !!st && (st.wrong !== undefined ? st.wrong : st.m > st.r); };
+function pickWords(pool, n) {
+  const oldestFirst = list => shuffle(list.slice()).sort((a, b) => lastAsked(a) - lastAsked(b)); // shuffle first so ties are random
+  const review = oldestFirst(pool.filter(needsReview)).slice(0, Math.ceil(n * REVIEW_SHARE));
+  const fresh = oldestFirst(pool.filter(w => !review.includes(w)));
+  const picked = review.map(w => ({ w, review: true })).concat(fresh.map(w => ({ w, review: false }))).slice(0, n);
+  return shuffle(picked);
 }
 function conjRows(w, setKey) {
   const rows = [];
@@ -294,22 +298,20 @@ function distractors(w, field, n) {
 function buildQuiz(s) {
   const pool = quizPool(s), qs = [];
   if (s.mode === 'conj') {
-    const used = new Set(); let tries = 0;
-    while (qs.length < s.count && tries++ < s.count * 30 && pool.length) {
-      const w = pickWeighted(pool), rows = conjRows(w, s.forms);
+    const used = new Set(), picks = pickWords(pool, s.count); let tries = 0;
+    for (let i = 0; qs.length < s.count && tries++ < s.count * 30 && picks.length; i++) {
+      const { w, review } = picks[i % picks.length], rows = conjRows(w, s.forms); // small pools cycle, with a different form
       if (!rows.length) continue;
       const r = rows[Math.floor(Math.random() * rows.length)];
       if (used.has(w.id + r.id)) continue;
       used.add(w.id + r.id);
-      qs.push({ wid: w.id, kind: 'conj', label: r.label, sec: r.sec, pattern: r.pattern, answer: r.form, note: r.note });
+      qs.push({ wid: w.id, kind: 'conj', review, label: r.label, sec: r.sec, pattern: r.pattern, answer: r.form, note: r.note });
     }
   } else {
-    const left = pool.slice();
-    while (qs.length < s.count && left.length) {
-      const w = pickWeighted(left); left.splice(left.indexOf(w), 1);
-      if (s.mode === 'e2kt') { qs.push({ wid: w.id, kind: 'e2kt', answer: w.k }); continue; }
+    for (const { w, review } of pickWords(pool, s.count)) {
+      if (s.mode === 'e2kt') { qs.push({ wid: w.id, kind: 'e2kt', review, answer: w.k }); continue; }
       const field = s.mode === 'k2e' ? 'en' : 'k';
-      qs.push({ wid: w.id, kind: s.mode, answer: w[field], options: shuffle([w[field], ...distractors(w, field, 3)]) });
+      qs.push({ wid: w.id, kind: s.mode, review, answer: w[field], options: shuffle([w[field], ...distractors(w, field, 3)]) });
     }
   }
   return qs;
@@ -317,7 +319,7 @@ function buildQuiz(s) {
 const norm = s => String(s || '').replace(/[\s?.!~,。]/g, '').normalize('NFC');
 const isTyped = q => q.kind === 'conj' || q.kind === 'e2kt';
 function startQuiz(qs) { ui.quiz = { qs, i: 0, score: 0, answered: null, results: [] }; render(); }
-function record(w, right) { w.stats = w.stats || { r: 0, m: 0 }; if (right) w.stats.r++; else w.stats.m++; persist(); }
+function record(w, right) { w.stats = w.stats || { r: 0, m: 0 }; if (right) w.stats.r++; else w.stats.m++; w.stats.last = Date.now(); w.stats.wrong = !right; persist(); }
 function answer(given) {
   const z = ui.quiz, q = z.qs[z.i], w = byId(q.wid);
   if (!w || z.answered) return;
@@ -332,7 +334,7 @@ function overrideRight() {
   const z = ui.quiz; if (!z.answered || z.answered.right) return;
   const w = byId(z.qs[z.i].wid);
   z.answered.right = true; z.score++; z.results[z.results.length - 1].right = true;
-  if (w && w.stats) { w.stats.m = Math.max(0, w.stats.m - 1); w.stats.r++; persist(); }
+  if (w && w.stats) { w.stats.m = Math.max(0, w.stats.m - 1); w.stats.r++; w.stats.wrong = false; persist(); }
   render();
 }
 function nextQ() { const z = ui.quiz; z.i++; z.answered = null; render(); }
@@ -358,7 +360,7 @@ function quizSetupView() {
     <label class="check"><input type="checkbox" id="qstar"${setup.starOnly ? ' checked' : ''}> ★ Starred words only</label>
     <div class="row">
       <button class="btn primary" type="submit"${can ? '' : ' disabled'}>Start quiz</button>
-      <span class="stats">${can ? `${n} question${n === 1 ? '' : 's'} from ${pool.length} word${pool.length === 1 ? '' : 's'}. Words you miss come up more often.` : 'No words match these settings. Pick another topic or type, or turn off “Starred only”.'}</span>
+      <span class="stats">${can ? `${n} question${n === 1 ? '' : 's'} from ${pool.length} word${pool.length === 1 ? '' : 's'}. Words you haven’t seen lately come first; a few you missed come back for review.` : 'No words match these settings. Pick another topic or type, or turn off “Starred only”.'}</span>
     </div>
   </form></main>`;
 }
@@ -367,7 +369,7 @@ function quizQuestionView() {
   const z = ui.quiz, q = z.qs[z.i], w = byId(q.wid);
   if (!w) { nextQ(); return ''; }
   const done = !!z.answered;
-  const head = `<div class="qhead"><span>Question ${z.i + 1} of ${z.qs.length}</span><span>Score ${z.score}</span><button class="btn small" type="button" id="quitquiz">End quiz</button></div>
+  const head = `<div class="qhead"><span>Question ${z.i + 1} of ${z.qs.length}</span><span>Score ${z.score}</span>${q.review ? '<span class="tag irr" title="You missed this one last time">Review</span>' : ''}<button class="btn small" type="button" id="quitquiz">End quiz</button></div>
     <div class="progress"><span style="width:${(z.i / z.qs.length) * 100}%"></span></div>`;
   let body;
   const typedForm = `<form id="typedform" class="typed" autocomplete="off">
